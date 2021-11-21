@@ -60,6 +60,17 @@ class Util:
             return res
 
         return wrapper
+    
+    @staticmethod
+    def get_array_element(plugs):
+        outputs = []
+        for i in range(plugs.numConnectedElements()):
+            plug = plugs.elementByPhysicalIndex(i)
+            array = OpenMaya.MPlugArray()
+            plug.connectedTo(array,True,False)
+            outputs.append(array[0])
+            del array
+        return outputs
 
 
 class CallbackNodeBase(plugins.DependNode):
@@ -172,22 +183,10 @@ class CallbackNodeBase(plugins.DependNode):
         else:
             OpenMaya.MGlobal.displayWarning("`%s` not valid" % plug.name())
 
-    def on_element_changed(self, plug, other_plug, plug_dict):
-        grp = plug.array().parent()
-        grp_index = grp.logicalIndex()
-        index = plug.logicalIndex()
-        if self.is_connection_made:
-            plug_dict[grp_index][index] = other_plug.name()
-        elif self.is_connection_broken:
-            plug_dict[grp_index].pop(index, None)
-
-
 class CallbackNodeSyncMixin(object):
     def __init__(self):
         super(CallbackNodeSyncMixin, self).__init__()
         self.sync_cache = {}
-        self.sync_inputs_plugs = nestdict()
-        self.sync_outputs_plugs = nestdict()
         self.deffer_flag = set()
 
     def eval_sync_grp(self, plug, call_type):
@@ -201,8 +200,9 @@ class CallbackNodeSyncMixin(object):
         scirpt_plug_name = grp.child(self.script).name()
         callback = getattr(module, CALLBACK_NAME, None)
 
-        inputs = self.sync_inputs_plugs.get(index)
-        outputs = self.sync_outputs_plugs.get(index)
+        inputs = Util.get_array_element(grp.child(self.inputs))
+        outputs = Util.get_array_element(grp.child(self.outputs))
+
         try:
             assert module, "`%s` not valid" % scirpt_plug_name
             assert callable(callback), "`%s` -> `%s` method not exists" % (
@@ -219,9 +219,8 @@ class CallbackNodeSyncMixin(object):
             return
 
         data = {}
-
-        data["inputs"] = [i for _, i in sorted(inputs.items())]
-        data["outputs"] = [o for _, o in sorted(outputs.items())]
+        data["inputs"] = [i.name() for i in inputs]
+        data["outputs"] = [o.name() for o in outputs]
         data["type"] = call_type
 
         # NOTE ignore undo run callback
@@ -234,7 +233,7 @@ class CallbackNodeSyncMixin(object):
                 # NOTE null check so that delete will perform correctly
                 lambda p=plug.name(): (
                     cmds.objExists(p) and callback(self, data),
-                    self.deffer_flag.clear(),print(cmds.objExists(p))
+                    self.deffer_flag.clear(),
                 )
             )
 
@@ -315,17 +314,8 @@ class CallbackNode(CallbackNodeSyncMixin, CallbackNodeListenMixin, CallbackNodeB
             elif attribute == self.listen_script:
                 return self.on_script_changed(plug, self.listen_cache)
         elif self.is_connection_made or self.is_connection_broken:
-            plug_dict = None
-            if attribute == self.inputs:
-                plug_dict = self.sync_inputs_plugs
-            elif attribute == self.outputs:
-                plug_dict = self.sync_outputs_plugs
-            elif attribute == self.listen_inputs:
-                plug_dict = self.listen_inputs_plugs
+            if attribute == self.listen_inputs:
                 self.on_listen_connect(plug, other_plug)
-
-            if plug_dict is not None:
-                return self.on_element_changed(plug, other_plug, plug_dict)
 
     def on_node_removed(self, *args):
         # TODO undo would not rebuild callbacks that make everything undesired
