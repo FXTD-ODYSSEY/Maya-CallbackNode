@@ -60,13 +60,16 @@ class Util:
         return wrapper
 
 
-class CallbackNodeAttrMixin(object):
+class CallbackNodeBase(plugins.DependNode):
+    call_name = os.getenv("__MAYA_CALLBACK_FUNC__") or "__callback__"
+    _name = PLUGIN_NAME
+    # _typeId = OpenMaya.MTypeId(0x00991)
 
     enable = OpenMaya.MObject()
     script = OpenMaya.MObject()
     inputs = OpenMaya.MObject()
     outputs = OpenMaya.MObject()
-    attribute_group = OpenMaya.MObject()
+    sync_group = OpenMaya.MObject()
 
     listen_title = OpenMaya.MObject()
     listen_enable = OpenMaya.MObject()
@@ -101,7 +104,7 @@ class CallbackNodeAttrMixin(object):
         msgAttr.setWritable(1)
         msgAttr.setStorable(1)
 
-        cls.attribute_group = cAttr.create("attribute_group", "ag")
+        cls.sync_group = cAttr.create("sync_group", "sg")
         cAttr.addChild(cls.enable)
         cAttr.addChild(cls.script)
         cAttr.addChild(cls.inputs)
@@ -134,16 +137,17 @@ class CallbackNodeAttrMixin(object):
         cAttr.addChild(cls.listen_inputs)
         cAttr.setArray(1)
 
-        cls.addAttribute(cls.attribute_group)
+        cls.addAttribute(cls.sync_group)
         cls.addAttribute(cls.listen_group)
 
+    def __init__(self):
+        super(CallbackNodeBase, self).__init__()
+        self.is_connection_made = False
+        self.is_connection_broken = False
+        self.callback_ids = OpenMaya.MCallbackIdArray()
 
-class CallbackNodeSyncMixin(object):
-    def on_script_updated(self, msg, plug, other_plug=None, data=None):
-
-        is_setattr = msg & OpenMaya.MNodeMessage.kAttributeSet
-        if plug.attribute() != self.script and msg and not is_setattr:
-            return
+    def on_script_changed(self, plug, cache, module_name="__CallbackCache[{i}]__"):
+        assert isinstance(cache, dict), "wrong type argument"
 
         grp = plug.parent()
         index = grp.logicalIndex()
@@ -151,7 +155,7 @@ class CallbackNodeSyncMixin(object):
         if not script:
             return
 
-        module_name = "__CallbackCache[%s]__" % index
+        module_name = module_name.format(i=index)
 
         envs = os.environ.copy()
         envs.update({"__file__": __file__, "__dir__": DIR})
@@ -165,126 +169,194 @@ class CallbackNodeSyncMixin(object):
             six.exec_(script, module.__dict__)
 
         if module:
-            self.cache[index] = module
+            cache[index] = module
         else:
             OpenMaya.MGlobal.displayWarning("`%s` not valid" % plug.name())
+
+    def on_element_changed(self, plug, other_plug, plug_dict):
+        grp = plug.array().parent()
+        grp_index = grp.logicalIndex()
+        index = plug.logicalIndex()
+        if self.is_connection_made:
+            plug_dict[grp_index][index] = other_plug.name()
+        elif self.is_connection_broken:
+            plug_dict[grp_index].pop(index, None)
+
+
+class CallbackNodeSyncMixin(object):
+    def __init__(self):
+        super(CallbackNodeSyncMixin, self).__init__()
+        self.sync_cache = {}
+        self.sync_inputs_plugs = nestdict()
+        self.sync_outputs_plugs = nestdict()
 
     def eval_sync_grp(self, grp, call_type):
         index = grp.logicalIndex()
         is_enable = grp.child(self.enable).asBool()
-        module = self.cache.get(index)
+        if not is_enable:
+            return
+
+        module = self.sync_cache.get(index)
         scirpt_plug_name = grp.child(self.script).name()
         callback = getattr(module, self.call_name, None)
-        plug_data = self.plug_cache.get(index)
+
+        inputs = self.sync_inputs_plugs.get(index)
+        outputs = self.sync_outputs_plugs.get(index)
         try:
-            assert is_enable
             assert module, "`%s` not valid" % scirpt_plug_name
             assert callable(callback), "`%s` -> `%s` method not exists" % (
                 scirpt_plug_name,
                 self.call_name,
             )
-            inputs = plug_data["inputs"]
             assert inputs, "`%s` is empty" % grp.child(self.inputs).name()
-            outputs = plug_data["outputs"]
             assert outputs, "`%s` is empty" % grp.child(self.outputs).name()
 
         except AssertionError as e:
             is_eval = call_type == "eval"
-            msg = str(e)
-            is_eval and msg and OpenMaya.MGlobal.displayWarning(msg)
+            if is_eval:
+                OpenMaya.MGlobal.displayWarning(str(e))
             return
 
         data = {}
-        data["inputs"] = [i for _, i in sorted(plug_data["inputs"].items())]
-        data["outputs"] = [o for _, o in sorted(plug_data["outputs"].items())]
+        data["inputs"] = [i for _, i in sorted(inputs.items())]
+        data["outputs"] = [o for _, o in sorted(outputs.items())]
         data["type"] = call_type
         # NOTE ignore undo run callback
         cmds.evalDeferred(partial(Util.ignore_undo_deco(callback), self, data))
 
 
 class CallbackNodeListenMixin(object):
-    def eval_listen_grp(self, grp, call_type):
-        pass
+    def __init__(self):
+        super(CallbackNodeListenMixin, self).__init__()
+        self.listen_cache = {}
+        self.listen_inputs_plugs = nestdict()
+        self.listen_ids = {}
+
+    def on_listen_attr_changed(self, msg, plug, other_plug=None, grp=None):
+        is_enable = grp.child(self.listen_enable).asBool()
+        if not is_enable:
+            return
+
+        index = grp.logicalIndex()
+        scirpt_plug_name = grp.child(self.listen_script).name()
+
+        try:
+            module = self.listen_cache.get(index)
+            assert module, "`%s` not valid" % scirpt_plug_name
+            callback = getattr(module, self.call_name, None)
+            assert callable(callback), "`%s` -> `%s` method not exists" % (
+                scirpt_plug_name,
+                self.call_name,
+            )
+        except AssertionError as e:
+            OpenMaya.MGlobal.displayWarning(str(e))
+            return
+
+        callback(self, msg, plug, other_plug)
+
+    def on_listen_connect(self, plug, other_plug):
+        grp = plug.array().parent()
+        index = grp.logicalIndex()
+
+        if self.is_connection_made:
+            callback_id = OpenMaya.MNodeMessage.addAttributeChangedCallback(
+                other_plug.node(), self.on_listen_attr_changed, grp
+            )
+            self.listen_ids[index] = callback_id
+        elif self.is_connection_broken:
+            callback_id = self.listen_ids[index]
+            OpenMaya.MMessage.removeCallback(callback_id)
 
 
 class CallbackNode(
-    CallbackNodeAttrMixin,
     CallbackNodeSyncMixin,
     CallbackNodeListenMixin,
-    plugins.DependNode,
+    CallbackNodeBase,
 ):
-    call_name = os.getenv("__MAYA_CALLBACK_FUNC__") or "__callback__"
-    _name = PLUGIN_NAME
-    # _typeId = OpenMaya.MTypeId(0x00991)
+    def on_attr_changed(self, msg, plug, other_plug=None, data=None):
+
+        self.is_connection_made = msg & OpenMaya.MNodeMessage.kConnectionMade
+        self.is_connection_broken = msg & OpenMaya.MNodeMessage.kConnectionBroken
+
+        is_attribute_set = msg & OpenMaya.MNodeMessage.kAttributeSet
+        is_array_added = msg & OpenMaya.MNodeMessage.kAttributeArrayAdded
+
+        attribute = plug.attribute()
+        if is_attribute_set:
+            if attribute == self.script:
+                return self.on_script_changed(plug, self.sync_cache)
+            elif attribute == self.listen_script:
+                return self.on_script_changed(plug, self.listen_cache)
+        elif self.is_connection_made or self.is_connection_broken:
+            plug_dict = None
+            if attribute == self.inputs:
+                plug_dict = self.sync_inputs_plugs
+            elif attribute == self.outputs:
+                plug_dict = self.sync_outputs_plugs
+            elif attribute == self.listen_inputs:
+                plug_dict = self.listen_inputs_plugs
+                self.on_listen_connect(plug, other_plug)
+
+            if plug_dict is not None:
+                return self.on_element_changed(plug, other_plug, plug_dict)
+        elif is_array_added:
+            # NOTE new plug auto add title attribute
+            if attribute == self.listen_group:
+                index = plug.logicalIndex()
+                title_plug = plug.child(self.listen_title)
+                title_plug.setString("Listen Group %s" % index)
+
+    def on_node_removed(self, *args):
+        OpenMaya.MMessage.removeCallbacks(self.callback_ids)
+        for i in self.listen_ids.keys():
+            OpenMaya.MMessage.removeCallback(i)
 
     def postConstructor(self):
-        self.cache = {}
-        self.plug_cache = nestdict()
-        self.is_connection_made = False
-        self.is_connection_broke = False
+        this = self.thisMObject()
+        addAttributeChangedCallback = OpenMaya.MNodeMessage.addAttributeChangedCallback
+        addNodePreRemovalCallback = OpenMaya.MNodeMessage.addNodePreRemovalCallback
+        callback_id = addAttributeChangedCallback(this, self.on_attr_changed)
+        self.callback_ids.append(callback_id)
+        callback_id = addNodePreRemovalCallback(this, self.on_node_removed)
+        self.callback_ids.append(callback_id)
 
-        obj = self.thisMObject()
-        OpenMaya.MNodeMessage.addAttributeChangedCallback(obj, self.on_script_updated)
+        # # NOTE setup default listen_title name
+        # plug = OpenMaya.MPlug(this, self.listen_group)
+        # plug = plug.elementByLogicalIndex(0).child(self.listen_title)
+        # plug.setString("Listen Group 0")
 
-    def setDependentsDirty(self, plug, plug_array):
+    def setDependentsDirty(self, plug, _):
+        filter_attrs = [
+            self.enable,
+            self.script,
+            self.listen_enable,
+            self.listen_script,
+            self.listen_title,
+            self.listen_inputs,
+        ]
+
         call_type = "eval"
-        filter_attrs = [self.enable, self.listen_enable]
         if self.is_connection_made:
             call_type = "make_connection"
             self.is_connection_made = False
         else:
             filter_attrs.append(self.outputs)
 
-        if self.is_connection_broke:
+        if self.is_connection_broken:
             call_type = "broke_connection"
-            self.is_connection_broke = False
-
-        # NOTE refresh message attribute
-        cmds.evalDeferred(partial(cmds.dgdirty, plug.name(), c=1))
+            self.is_connection_broken = False
 
         attribute = plug.attribute()
         if attribute in filter_attrs:
             return
-        elif attribute == self.script:
-            return self.on_script_updated(0, plug)
+
+        # NOTE refresh message attribute
+        cmds.evalDeferred(partial(cmds.dgdirty, plug.name(), c=1))
 
         if plug.isElement():
             grp = plug.array().parent()
-            if grp == self.attribute_group:
+            if grp == self.sync_group:
                 self.eval_sync_grp(grp, call_type)
-            elif grp == self.listen_group:
-                self.eval_listen_grp(grp, call_type)
-
-    def connectionMade(self, plug, otherPlug, src):
-        self.is_connection_made = True
-        attribute = plug.attribute()
-        is_inputs = attribute == self.inputs
-        is_outputs = attribute == self.outputs
-        if is_inputs or is_outputs:
-            grp = plug.array().parent()
-            grp_index = grp.logicalIndex()
-            category = "inputs" if is_inputs else "outputs"
-            index = plug.logicalIndex()
-            self.plug_cache[grp_index][category][index] = otherPlug.name()
-
-        # print("connectionMade", plug.name(), otherPlug.name(), src)
-        return super(CallbackNode, self).connectionMade(plug, otherPlug, src)
-
-    def connectionBroken(self, plug, otherPlug, src):
-        self.is_connection_broke = True
-        attribute = plug.attribute()
-        is_inputs = attribute == self.inputs
-        is_outputs = attribute == self.outputs
-        if is_inputs or is_outputs:
-            grp = plug.array().parent()
-            grp_index = grp.logicalIndex()
-            category = "inputs" if is_inputs else "outputs"
-            index = plug.logicalIndex()
-            self.plug_cache[grp_index][category].pop(index, None)
-
-        # print("connectionBroken", plug.name(), otherPlug.name(), src)
-        return super(CallbackNode, self).connectionBroken(plug, otherPlug, src)
-
 
 def initializePlugin(mobject):
     CallbackNode.register(mobject)
@@ -306,9 +378,9 @@ if __name__ == "__main__":
 
     node = cmds.createNode(PLUGIN_NAME)
     float_constant = cmds.createNode("floatConstant")
-    cmds.connectAttr(float_constant + ".outFloat", node + ".ag[0].i[0]", f=1)
+    cmds.connectAttr(float_constant + ".outFloat", node + ".sg[0].i[0]", f=1)
     float_constant = cmds.createNode("floatConstant")
-    cmds.connectAttr(float_constant + ".inFloat", node + ".ag[0].o[0]", f=1)
+    cmds.connectAttr(float_constant + ".inFloat", node + ".sg[0].o[0]", f=1)
     code = dedent(
         """
         import pymel.core as pm
@@ -321,5 +393,5 @@ if __name__ == "__main__":
             dst.set(val)
         """
     )
-    node = "callbackNode1"
-    cmds.setAttr(node + ".ag[0].s", code, typ="string")
+    # node = "callbackNode1"
+    cmds.setAttr(node + ".sg[0].s", code, typ="string")
