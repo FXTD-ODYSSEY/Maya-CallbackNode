@@ -66,7 +66,7 @@ class CallbackNodeAttrMixin(object):
     script = OpenMaya.MObject()
     inputs = OpenMaya.MObject()
     outputs = OpenMaya.MObject()
-    script_group = OpenMaya.MObject()
+    attribute_group = OpenMaya.MObject()
 
     listen_title = OpenMaya.MObject()
     listen_enable = OpenMaya.MObject()
@@ -119,8 +119,6 @@ class CallbackNodeAttrMixin(object):
         eAttr.setKeyable(1)
         eAttr.setWritable(1)
 
-        
-
         cls.listen_script = tAttr.create("listen_script", "ls", kString)
         tAttr.setWritable(1)
 
@@ -136,7 +134,7 @@ class CallbackNodeAttrMixin(object):
         cAttr.addChild(cls.listen_inputs)
         cAttr.setArray(1)
 
-        cls.addAttribute(cls.script_group)
+        cls.addAttribute(cls.attribute_group)
         cls.addAttribute(cls.listen_group)
 
 
@@ -252,7 +250,7 @@ class CallbackNode(
 
         if plug.isElement():
             grp = plug.array().parent()
-            if grp == self.script_group:
+            if grp == self.attribute_group:
                 self.eval_sync_grp(grp, call_type)
             elif grp == self.listen_group:
                 self.eval_listen_grp(grp, call_type)
@@ -308,9 +306,9 @@ if __name__ == "__main__":
 
     node = cmds.createNode(PLUGIN_NAME)
     float_constant = cmds.createNode("floatConstant")
-    cmds.connectAttr(float_constant + ".outFloat", node + ".sg[0].i[0]", f=1)
+    cmds.connectAttr(float_constant + ".outFloat", node + ".ag[0].i[0]", f=1)
     float_constant = cmds.createNode("floatConstant")
-    cmds.connectAttr(float_constant + ".inFloat", node + ".sg[0].o[0]", f=1)
+    cmds.connectAttr(float_constant + ".inFloat", node + ".ag[0].o[0]", f=1)
     code = dedent(
         """
         import pymel.core as pm
@@ -324,4 +322,4 @@ if __name__ == "__main__":
         """
     )
     node = "callbackNode1"
-    cmds.setAttr(node + ".sg[0].s", code, typ="string")
+    cmds.setAttr(node + ".ag[0].s", code, typ="string")
