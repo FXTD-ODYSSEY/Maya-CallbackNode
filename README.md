@@ -1,14 +1,18 @@
 # Maya-CallbackNode
 
-Autodesk Maya Python CallbackNode for rigging and more
+Autodesk Maya Python CallbackNode for event management
 
----
+This idea came from this [link](https://sonictk.github.io/maya_node_callback_example/)  
+Create a `OpenMaya` Custom Node to manage the Event Callback and enhance rigging circumstances like IK/FK switch and more.  
+Using custom Node attribute can easy manage the event and even support the reference situation.
 
+## Install
 
-This idea is come from this [link](https://sonictk.github.io/maya_node_callback_example/)  
-Try to utilize the `OpenMaya` Event Callback to enhance rigging circumstances like IK/FK switch and more.  
+## How to use
 
-I have a similar idea When I watch a IK/FK swtich tutorial which using `scriptjob` for auto swtich.  
+## About 
+
+I have a similar idea When I watch a IK/FK swtich [tutorial](https://www.bilibili.com/video/BV1Hx411C7i8) which using `scriptjob` event.  
 But [cult of rig](http://www.cultofrig.com/2017/07/22/pilot-season-day-16-automatically-loading-callbacks-scene-load/) article just further more than that.  
 combinate the OpenMaya and `scirptNode` together, which make switch more powerful.   
 [sonictk](https://sonictk.github.io/maya_node_callback_example/) claim that scriptNode not support the reference namespace circumstances.  

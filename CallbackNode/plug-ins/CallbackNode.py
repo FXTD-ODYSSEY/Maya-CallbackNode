@@ -60,14 +60,14 @@ class Util:
             return res
 
         return wrapper
-    
+
     @staticmethod
     def get_array_element(plugs):
         outputs = []
         for i in range(plugs.numConnectedElements()):
             plug = plugs.elementByPhysicalIndex(i)
             array = OpenMaya.MPlugArray()
-            plug.connectedTo(array,True,False)
+            plug.connectedTo(array, True, False)
             outputs.append(array[0])
             del array
         return outputs
@@ -123,7 +123,7 @@ class CallbackNodeBase(plugins.DependNode):
 
         # -----------------------------------------------------------
 
-        cls.listen_label = tAttr.create("listen_label", "lb", kString)
+        cls.listen_label = tAttr.create("listen_label", "ll", kString)
         tAttr.setWritable(1)
 
         cls.listen_enable = eAttr.create("listen_enable", "le", 1)
@@ -149,6 +149,7 @@ class CallbackNodeBase(plugins.DependNode):
 
         cls.addAttribute(cls.sync_group)
         cls.addAttribute(cls.listen_group)
+        # TODO selection change callback
 
     def __init__(self):
         super(CallbackNodeBase, self).__init__()
@@ -182,6 +183,7 @@ class CallbackNodeBase(plugins.DependNode):
             cache[index] = module
         else:
             OpenMaya.MGlobal.displayWarning("`%s` not valid" % plug.name())
+
 
 class CallbackNodeSyncMixin(object):
     def __init__(self):
@@ -225,12 +227,14 @@ class CallbackNodeSyncMixin(object):
 
         # NOTE ignore undo run callback
         callback = Util.ignore_undo_deco(callback)
+
+        # TODO callback dead loop detect
         callback(self, data)
         # NOTE defer run so that sync the value properly
         if not self.deffer_flag:
             self.deffer_flag.add(1)
             cmds.evalDeferred(
-                # NOTE null check so that delete will perform correctly
+                # NOTE exists check so that delete will perform correctly
                 lambda p=plug.name(): (
                     cmds.objExists(p) and callback(self, data),
                     self.deffer_flag.clear(),
@@ -302,6 +306,8 @@ class CallbackNode(CallbackNodeSyncMixin, CallbackNodeListenMixin, CallbackNodeB
 
     def on_attr_changed(self, msg, plug, other_plug=None, data=None):
 
+        # TODO state no effect
+
         self.is_connection_made = msg & OpenMaya.MNodeMessage.kConnectionMade
         self.is_connection_broken = msg & OpenMaya.MNodeMessage.kConnectionBroken
 
@@ -333,6 +339,8 @@ class CallbackNode(CallbackNodeSyncMixin, CallbackNodeListenMixin, CallbackNodeB
         self.callback_ids.append(callback_id)
 
     def setDependentsDirty(self, plug, _):
+        # TODO state no effect
+
         attrs = [self.inputs]
 
         call_type = "eval"
@@ -350,16 +358,17 @@ class CallbackNode(CallbackNodeSyncMixin, CallbackNodeListenMixin, CallbackNodeB
             return
 
         # NOTE refresh message attribute
+        # NOTE https://around-the-corner.typepad.com/adn/2012/07/dirtying-a-maya-mplug-for-array-attribute.html
         # cmds.evalDeferred(lambda p=plug.name(): cmds.dgdirty(p, c=1))
         cmds.dgdirty(plug.name(), c=1)
+
         if plug.isElement():
             grp = plug.array().parent()
             if grp == self.sync_group:
                 self.eval_sync_grp(plug, call_type)
 
-    # def evaluate(self,plug,callback):
-    #     pass
 
+# TODO Node UI template
 
 def initializePlugin(mobject):
     CallbackNode.register(mobject)
